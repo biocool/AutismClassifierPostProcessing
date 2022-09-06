@@ -1,0 +1,768 @@
+---
+title: Assessing Effect of Mutation in Autism Risk Genes on the Ensemble Classifier
+  Scores
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+## Function Definition
+
+#### "convert.df.2.ggplot.friendly" function 
+```{r convert.df.2.ggplot.friendly function }
+################################################################################
+#Description=======
+#This function puts all columns that are not "fixed.characteristics" in a single column and adds
+#a new column to show each mesurement values belong to which measurement type.
+#(for example "diagnosis" is a fixed.characteristics or any 
+#other measures that we are not going do startify subjects based on those and are note being used in "facet")
+################################################################################
+#INPUT====
+#"df" a data frame (the first col is SubjectID), 
+#"no.of.fixed.characteristics" is the number of cols that show the clinical characteristics
+#which we want to repeat them for all Mesearements (e.g. Sex, Dxj, ....). By default these fixed.characteristics MUST be the most right cols
+################################################################################
+#OUTPUT====
+#"ggplot.friendly.df": is the converted version of the imput which is very friendly for ggplot.
+################################################################################
+#function definition========
+convert.df.2.ggplot.friendly <- function(df, no.of.fixed.characteristics)
+{
+  library(dplyr)
+  no.of.cols <- 
+    ncol(df)
+  #the final df would be 2-column df
+  #the first column shows that subjectIDs and the second one shows the measurement (e.g. clinical metrics or eye tracking feature etc.)
+  ggplot.friendly.df <- 
+    as.data.frame(matrix(ncol = 3 + no.of.fixed.characteristics, nrow = 1))
+  #the "fixed.characteristics.col.name" vctr shows the colnames for those "fixed.characteristics"
+  if (no.of.fixed.characteristics != 0 ) 
+  {
+    fixed.characteristics.col.name  <- 
+      colnames(df)[c((no.of.cols - no.of.fixed.characteristics + 1):no.of.cols)]
+    colnames(ggplot.friendly.df) <- 
+      c("SubjectID", fixed.characteristics.col.name, "MesearementValue", "Mesearement")
+  }else
+  {
+    fixed.characteristics.col.name  <- NA
+    colnames(ggplot.friendly.df) <- 
+      c("SubjectID", "MesearementValue", "Mesearement")
+  }
+ 
+  no.of.measurements <- 
+    no.of.cols - no.of.fixed.characteristics - 1 # -1==> SubjectID 
+  measuresment.name.vctr <-
+    colnames(df)[c(2:(no.of.measurements+1))]
+  for (j in c(2:(no.of.measurements+1))) 
+  {
+    #selecting the related cols
+    if (no.of.fixed.characteristics != 0 ) 
+    {
+      df.correspond.to.current.measurement <-
+        df[,c(1,c((no.of.cols - no.of.fixed.characteristics + 1):no.of.cols),j)]
+    }else
+    {
+      df.correspond.to.current.measurement <-
+        df[,c(1,j)]
+    }
+    
+    #adding measurement name as last column
+    df.correspond.to.current.measurement$Mesearement <-
+      rep(measuresment.name.vctr[j-1], 
+          nrow(df.correspond.to.current.measurement))
+    colnames(df.correspond.to.current.measurement) <- 
+      colnames(ggplot.friendly.df)
+    ggplot.friendly.df <- 
+      rbind(ggplot.friendly.df , df.correspond.to.current.measurement)
+  }
+  
+  #remoding the first NA row 
+  ggplot.friendly.df <-
+    ggplot.friendly.df[-1,]
+ return(ggplot.friendly.df)
+}
+
+
+```
+
+#### "extract.the.most.recent.clinical.measures" function 
+```{r extract.the.most.recent.clinical.measures function}
+################################################################################
+#Description=======
+#This function selects the most recent clinical score from a dataframe of the clinical measures.
+#it was assumed that each clinical measure has at max five different values (five different visits)
+################################################################################
+#INPUT====
+#"clinical.score.df": a data frame from the selected clinical measuress
+#The first col is subject ID and for each clinical measures we have five columns corresponding to the five time points
+#(maximum five visits data we have for each subject)
+#"No.of.clinical.measures": Number of clinical measures, so the number of columns in the "clinical.score.df" should be:
+#"No.of.clinical.measures"*5 + 1
+################################################################################
+#OUTPUT====
+#"clinical.score.df.most.recent.score.Final" is a df. which contains the most recent score 
+#for each of the clinical measures for each subject
+################################################################################
+#function definition========
+extract.the.most.recent.clinical.measures <- 
+  function(clinical.score.df, No.of.clinical.measures)
+  {
+    #main====
+    clinical.score.df [clinical.score.df == "NULL"] <- NA
+    clinical.score.df.most.recent.score <- 
+      matrix(nrow = nrow(clinical.score.df), ncol = No.of.clinical.measures)
+    clinical.score.df.most.recent.score <- 
+      as.data.frame(clinical.score.df.most.recent.score)
+    #checking the consistency
+    if (((ncol(clinical.score.df)-1)/5)!=No.of.clinical.measures) 
+    {
+      warnings("No.of.clinical.measures is incostistence with:")
+      warnings("each clinical measures should havd five time points")
+      return()
+    }
+    #The first col is subject ID
+    #each five consec. cols show the five time points for one clincial measure 
+    for (clinical.index in seq(1, No.of.clinical.measures*5,5)+1) 
+    {
+      name.4.this.measure <- 
+        paste(colnames(clinical.score.df)[clinical.index],".Most.Recent", sep = "")
+      
+      clinical.No<- 
+        floor((clinical.index/5)+1)
+      colnames(clinical.score.df.most.recent.score)[clinical.No] <- 
+        name.4.this.measure
+      #for each subject find the most recent clinical score
+      for (subject.index in c(1:nrow(clinical.score.df))) 
+      {
+        #finding the las non NA value in the five time points for this subject
+        indx.4.most.recent <- 
+          max(which(!is.na(clinical.score.df[subject.index,c(clinical.index:(clinical.index+4))])))
+        if (indx.4.most.recent == -Inf) 
+        {
+          most.recent.clinical.value <- NA
+        }else
+        {
+          most.recent.clinical.value <-
+            clinical.score.df[subject.index,(clinical.index + indx.4.most.recent - 1)]
+        }
+        clinical.score.df.most.recent.score[subject.index,clinical.No] <- 
+          as.numeric(most.recent.clinical.value)
+      }
+    }
+    clinical.score.df.most.recent.score.Final <- 
+      cbind(subjectID = clinical.score.df$subjectid, 
+          clinical.score.df.most.recent.score)
+    return(clinical.score.df.most.recent.score.Final)
+  }
+
+```
+
+
+## Loading required libraries
+```{r loading libraries}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(tidyverse)
+library(ggstatsplot)
+library(knitr)
+```
+
+
+## Data preprocessing
+
+### Reading the data
+```{r}
+#The below file contains the subjects having MIPs data. 
+#I removed the redundant subjects (I just kept one occurenece of any subjects with more than one mutations. There were four such subjects: T4X4H; U3V4P; W7R4W; Z7W4J)
+#Also, I removed one mutatoin that was missense and had CADD<30 (Tyanyun said we just need to aplly CADD score threshold for missense mutations)
+Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed<- 
+  read.csv("../Data/FinalTyanyunFiles/SupplementaryTable9.MissenseCADDFiltered.RedundantSubjects.Removed.csv")
+```
+
+### categorzing the mutations into "Missense" and "LGD"
+```{r cleaning the mutation types and modfying col names }
+#adding a col for mutation type 
+table(Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed$Mutation.Effect)
+# frameshift        missense splice-acceptor    splice-donor     stop-gained 
+# 2              25               1               1               2 
+Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed <- 
+  Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed %>%
+    mutate(MutationType = replace(Mutation.Effect, 
+                                  Mutation.Effect %in% c("splice-acceptor", "frameshift", "splice-donor", "stop-gained"), 
+                                  "LGD")) %>%
+      mutate(MutationType = replace(MutationType, 
+                                    MutationType == "missense", 
+                                    "Missense"))
+table(Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed$MutationType)
+#the results can be different beacuse I droped one random occurence of the subjects with 2 mutations
+# LGD Missense 
+# 7       24 
+
+sbj.having.LGD.mutations <- 
+  Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed %>%
+  subset( MutationType == "LGD") %>%
+    select(subjectId)
+length(sbj.having.LGD.mutations$subjectId)#7  
+#coverting the df to a vector
+sbj.having.LGD.mutations <- 
+  sbj.having.LGD.mutations$subjectId
+
+sbj.having.Missense.mutations <- 
+  Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed %>%
+    subset( MutationType == "Missense") %>%
+      select(subjectId)
+length(sbj.having.Missense.mutations$subjectId)#24
+#converting the df to a vector
+sbj.having.Missense.mutations <- 
+  sbj.having.Missense.mutations$subjectId
+length(sbj.having.Missense.mutations)#24
+
+#subjects having any kind of mutations
+sbj.having.LGD.OR.Missense.mutations <- 
+  union(sbj.having.Missense.mutations, sbj.having.LGD.mutations)
+length(sbj.having.LGD.OR.Missense.mutations)#31
+
+#using a subset of columns having useful information
+load(file = "../Data/all.subjects.Train.Test.240")
+kable(all.subjects.Train.Test.240[c(1:5),])
+all.subjects.Train.Test.240 <- 
+  all.subjects.Train.Test.240[, c(2:9)]
+#adding new cols based on the updated mutation data 
+all.subjects.Train.Test.240 <- 
+  all.subjects.Train.Test.240 %>%
+    mutate(HaveMipsDaata = subjectId %in% 
+             Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed$subjectId)
+
+all.subjects.Train.Test.240 <- 
+  all.subjects.Train.Test.240 %>%
+    mutate(HaveMissense.Mutation = subjectId %in% 
+             sbj.having.Missense.mutations ) %>%
+      mutate(Have.LGD.Mutation = subjectId %in% 
+               sbj.having.LGD.mutations ) %>%
+        mutate(HaveMutation = subjectId %in% 
+                 sbj.having.LGD.OR.Missense.mutations )
+
+#changing some col names
+colnames(all.subjects.Train.Test.240)[colnames(all.subjects.Train.Test.240) =='weightedEstimate']<-'EnsembleScore'
+colnames(all.subjects.Train.Test.240)[colnames(all.subjects.Train.Test.240) =='group']<-'Train.Test'
+#converting "Train.Test" to factor (for viz. purposes)
+all.subjects.Train.Test.240$Train.Test <- 
+  as.factor(all.subjects.Train.Test.240$Train.Test)
+
+```
+
+## Visualization 
+SFARI version "SFARI-Gene_genes_05-05-2022release_05-27-2022export" was used as the refrence for ASD risk genes.
+```{r preparing the data for viz.}
+#subjects with mutations in SFARI genes (level 1 or 2) are shown by triangles 
+#and otther neurodevelopmental disorders by circles
+
+#extracting subjects have mutations in SFARI level 1 or 2 genes
+subjects.have.SFARI.Level.1.2.mutations <- 
+  Final.MIPS.Tyanyun.Kendra.corrected.MissenseCADDFiltered.RedundantSubjects.Removed %>%
+    subset(SFARI.gene.score %in% c("1","2"))%>%
+      select(subjectId)
+subjects.have.SFARI.Level.1.2.mutations <- 
+  subjects.have.SFARI.Level.1.2.mutations$subjectId
+length(subjects.have.SFARI.Level.1.2.mutations)#25
+length(unique(subjects.have.SFARI.Level.1.2.mutations))#25
+
+#adding a new column related to shape 
+all.subjects.Train.Test.240 <- 
+  all.subjects.Train.Test.240 %>%
+  mutate(SFARI.Level.1.OR.2 = subjectId %in% 
+           subjects.have.SFARI.Level.1.2.mutations )
+
+all.subjects.Train.Test.240$SFARI.Level.1.OR.2[all.subjects.Train.Test.240$SFARI.Level.1.OR.2 == TRUE] <- "SFARI.1.or.2"
+all.subjects.Train.Test.240$SFARI.Level.1.OR.2[all.subjects.Train.Test.240$SFARI.Level.1.OR.2 == FALSE] <- "Other neurodev. dis. "
+  
+#adding a color column
+##preparing the color column
+color.vctr <- 1 + all.subjects.Train.Test.240$HaveMipsDaata + all.subjects.Train.Test.240$HaveMutation +
+ all.subjects.Train.Test.240$HaveMissense.Mutation 
+range(color.vctr)#1 4
+length(color.vctr)#240 
+length(color.vctr) == nrow(all.subjects.Train.Test.240)#TRUE
+#1: means no MIPS all.subjects.Train.Test.240
+#2: means have MIPS all.subjects.Train.Test.240
+#3: means have mutation (anytype rather than missense)
+#4: means have missense mutation
+color.vctr <- 
+  str_replace(color.vctr, "1", "gray")#don't have mips all.subjects.Train.Test.240
+color.vctr <- 
+  str_replace(color.vctr, "2", "blue")#don't have muatation
+color.vctr <- 
+  str_replace(color.vctr, "3", "orange")#have mutation (LGD)
+color.vctr <- 
+  str_replace(color.vctr, "4", "red")#have missense mutation
+
+
+##adding this color as a column to the main all.subjects.Train.Test.240 frame
+all.subjects.Train.Test.240$Mutation.color <- 
+ color.vctr
+#adding a new column for using as the legend (label) for colored dots
+all.subjects.Train.Test.240$Mutation.label.4.ggplot <- 
+  all.subjects.Train.Test.240$Mutation.color
+table(all.subjects.Train.Test.240$Mutation.label.4.ggplot)
+all.subjects.Train.Test.240$Mutation.label.4.ggplot [
+  all.subjects.Train.Test.240$Mutation.label.4.ggplot =="blue"] <- "No Mutation"
+all.subjects.Train.Test.240$Mutation.label.4.ggplot [
+  all.subjects.Train.Test.240$Mutation.label.4.ggplot =="gray"] <- "No MIPs data"
+all.subjects.Train.Test.240$Mutation.label.4.ggplot [
+  all.subjects.Train.Test.240$Mutation.label.4.ggplot =="orange"] <- "LGD mutation"
+all.subjects.Train.Test.240$Mutation.label.4.ggplot [
+  all.subjects.Train.Test.240$Mutation.label.4.ggplot =="red"] <- "Missense mutation"
+
+all.subjects.Train.Test.240$Mutation.label.4.ggplot <- 
+  as.factor(all.subjects.Train.Test.240$Mutation.label.4.ggplot)
+
+all.subjects.Train.Test.240$Train.Test <- 
+  as.factor(all.subjects.Train.Test.240$Train.Test)
+
+```
+
+Comparing ensemble clasificatoin scores in different types of mutations 
+```{r Viz  ensemble clasificatoin scores }
+#"Prediction.score.MIPS.Mutations.box.plot.Oly.ASD.V4.pdf"
+all.subjects.Train.Test.240.temp <- 
+  all.subjects.Train.Test.240 %>%
+  filter(diagnosis_binary == "ASD")
+p <- 
+  ggplot(all.subjects.Train.Test.240.temp, aes(y = EnsembleScore, x = Train.Test, fill = Train.Test)) + 
+  scale_fill_manual(values = c("orchid1","pink1"))
+color.vctr <- all.subjects.Train.Test.240.temp$Mutation.color
+p + geom_violin(alpha =  0.2) +  geom_boxplot (alpha =  0.9, width = 0.3) + 
+  geom_jitter( aes(colour = color.vctr), size=2, alpha=0.9) +
+  scale_color_manual(values = c("blue" = "blue", "grey" = "gray", "red" = "red", "orange" = "orange"),  
+                     label = c("No Mutation", "No MIPs data", "Missense mutation", "LGD"))
+
+
+all.subjects.Train.Test.240$Mutation.color <- 
+  as.factor(all.subjects.Train.Test.240$Mutation.color)
+
+#"Prediction.score.MIPS.Mutations.box.plot.facet.V8.pdf"
+theme_set(theme_gray(base_size =15))
+ggplot(all.subjects.Train.Test.240, aes(y = EnsembleScore, 
+                                        x = Train.Test, fill = Train.Test)) + 
+  scale_fill_manual(name = "",values = c("orchid1","pink1")) + 
+  geom_boxplot (alpha =  0.5, width = 0.7, outlier.shape = NA) + 
+  geom_jitter(  aes( colour = Mutation.color, 
+                   shape = SFARI.Level.1.OR.2 ), size=3, alpha=0.9, 
+             position = position_jitterdodge(jitter.width = .3, dodge.width = 0.1))   +
+  scale_color_manual(name = "", 
+                     values = c("blue" = "blue", "grey" = "gray", "red" = "red", "orange" = "orange"),  
+                   label = c("No Mutation", "No MIPs data", "Missense mutation", "LGD")) +
+  theme(axis.title.x=element_blank(),
+      axis.text.x=element_blank(),
+      axis.ticks.x=element_blank(), 
+      legend.title=element_text(size=0))+
+  facet_wrap(diagnosis_binary~.) 
+```
+
+summarizing clinical measures for subejct with and without mutations
+```{r summarizing clinical measures for subejct with and without mutations}
+#adding clinical details from long wide report ("lwr.freez")========
+table(all.subjects.Train.Test.240$SFARI.Level.1.OR.2)
+load("../Data/lwr.freez")
+lwr.freez.subset.of.features <- 
+  lwr.freez %>% 
+    select(subjectid, 
+           DxJ_DxGroup_1, DxJ_DxGroup_2, 
+           DxJ_DxGroup_3, DxJ_DxGroup_4, 
+           DxJ_DxGroup_5, mullen_ELT_1, 
+           mullen_RLT_1, mullen_ELC_Std_1, 
+           vine_AdapBehav_DomStd_1,
+           ados_CoSoTot_1,
+           ados_RRTot_1,
+           ados_CoSoTotRRTot_1)
+  
+dim(lwr.freez.subset.of.features)#3179   13
+
+lwr.freez.subset.of.features$subjectid <- 
+  toupper(lwr.freez.subset.of.features$subjectid)
+all.subjects.Train.Test.240$subjectID <- 
+  toupper(all.subjects.Train.Test.240$subjectID)
+  
+all.subjects.Train.Test.240.lwr.features.added <-
+  merge(x = lwr.freez.subset.of.features, 
+      y = all.subjects.Train.Test.240, 
+      by.x = "subjectid", 
+      by.y = "subjectID", all.y = TRUE)
+dim(all.subjects.Train.Test.240.lwr.features.added)#240  27
+
+#New panel for NEW figure 5
+all.subjects.Train.Test.240.lwr.features.added.has.SFARI.Mutation <-
+  all.subjects.Train.Test.240.lwr.features.added %>%
+  filter(SFARI.Level.1.OR.2 == "SFARI.1.or.2")
+
+dim(all.subjects.Train.Test.240.lwr.features.added.has.SFARI.Mutation)#25 24
+all.subjects.Train.Test.240.lwr.features.added.has.SFARI.Mutation.Clinical.Summary <- 
+  all.subjects.Train.Test.240.lwr.features.added.has.SFARI.Mutation %>%
+    group_by(diagnosis_binary)%>%
+      summarise(
+                ELC.mean = mean(na.omit(as.numeric(mullen_ELC_Std_1))),
+                ELT.mean = mean(na.omit(as.numeric(mullen_ELT_1))),
+                RLT.mean = mean(na.omit(as.numeric(mullen_RLT_1))),
+                Vine_AdapBehav.mean = mean(na.omit(as.numeric(vine_AdapBehav_DomStd_1))),
+                ADOS.mean = mean(na.omit(as.numeric(ados_CoSoTotRRTot_1))),
+                n = length(ados_CoSoTotRRTot_1)
+                ) 
+```
+
+preparing the data for plotting
+```{r preparing the data}
+all.subjects.Train.Test.240.MosteRecent.LWR <-
+  all.subjects.Train.Test.240.lwr.features.added %>%
+  select(subjectId, 
+         ELT = mullen_ELT_1, 
+         RLT = mullen_RLT_1, 
+         ELC = mullen_ELC_Std_1, 
+         ABC = vine_AdapBehav_DomStd_1, 
+         ADOS = ados_CoSoTotRRTot_1,  
+         ClassifierScore = EnsembleScore, 
+         GeneMutation = SFARI.Level.1.OR.2, 
+         Diagnosis = diagnosis_binary )
+dim(all.subjects.Train.Test.240.lwr.features.added)#240  27
+dim(all.subjects.Train.Test.240.MosteRecent.LWR)#240   9
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot <-
+  convert.df.2.ggplot.friendly(df = all.subjects.Train.Test.240.MosteRecent.LWR, 
+                              no.of.fixed.characteristics = 2)
+#View(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot)
+
+#Renaming Values in Genemutation column according to Karen's email=======
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$GeneMutation[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$GeneMutation != "SFARI.1.or.2"] <-
+  "Without Mutation"
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$GeneMutation[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$GeneMutation == "SFARI.1.or.2"] <-
+  "With Mutation"
+
+#Renaming measurement names=============== 
+table(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement)
+#ClassifierScore            ADOS             ABC             ELT             RLT             ELC 
+#240             240             240             240             240             240 
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement == "ClassifierScore"] <-
+  "Classifier Score"
+
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement == "ADOS"] <-
+  "Severity"
+
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement == "ABC"] <-
+  "Adaptive"
+
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement == "ELT"] <-
+  "Expressive"
+
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement == "RLT"] <-
+  "Receptive"
+
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement == "ELC"] <-
+  "Devel. Quotient"
+
+#Reordering the values of the "Mesearement" according to the Karen's comment:
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement <-
+  factor(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement, 
+         levels =c("Classifier Score", "Severity", "Adaptive", "Expressive", "Receptive", "Devel. Quotient"))
+
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$MesearementValue <-
+  as.numeric(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$MesearementValue)
+
+table(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$GeneMutation)
+table(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot$Mesearement)
+dim(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot)
+
+
+
+```
+
+plotting
+```{r  fig.height = 15, fig.width = 15}
+
+#"Figure5.New.SixMeasurement.Box.pdf"
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot %>%
+  ggplot(aes(x = Diagnosis, y = MesearementValue, fill = Diagnosis  )) + 
+  geom_boxplot(outlier.shape = NA) + 
+  facet_grid( Mesearement ~ Diagnosis + GeneMutation , scales='free')
+
+
+#"Figure5.New.SixMeasurement.Violin.pdf"
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot %>%
+  ggplot(aes(x = Diagnosis, y = MesearementValue, fill = Diagnosis  )) + 
+  geom_violin(outlier.shape = NA) + 
+  facet_grid( Mesearement ~ Diagnosis + GeneMutation , scales='free')
+
+
+#"Figure5.New.SixMeasurement.ViolinV3.pdf"
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot %>%
+  ggplot(aes(x = Diagnosis, y = MesearementValue, fill =  factor(GeneMutation) )) + 
+  geom_violin(outlier.shape = NA) + 
+  facet_wrap(.~ Mesearement , scales='free') + theme(panel.spacing.x = unit(.75, "cm")) +
+  theme(panel.spacing.y = unit(.15, "cm"))+
+  theme(strip.background = element_rect(fill="lightblue", size=1, color="darkblue"))
+
+
+#adding a new color column based of Karen's suggestion
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot.haveColorCol <- 
+  all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot %>%
+    mutate(Color =case_when(
+      GeneMutation == "With Mutation" & Diagnosis == "TD" ~ "TD With Mutation",
+      GeneMutation == "Without Mutation" & Diagnosis == "TD" ~ "TD Without Mutation",
+      GeneMutation == "With Mutation" & Diagnosis == "ASD" ~ "ASD With Mutation",
+      GeneMutation == "Without Mutation" & Diagnosis == "ASD" ~ "ASD Without Mutation"
+      ))
+
+#fixing the order of four groups
+all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot.haveColorCol$Color <- 
+  factor(all.subjects.Train.Test.240.MosteRecent.LWR.Ready.4.ggplot.haveColorCol$Color,
+         levels = c("ASD With Mutation",
+                    "ASD Without Mutation", 
+                    "TD Without Mutation",
+                    "TD With Mutation"
+                    ),ordered = TRUE)
+
+```
+
+
+### Assessing the mutation in rASD genes on the five most important clincial measures 
+
+```{r Viz based on outcome scors}
+#loading all clinical measures for five visists for 240 subjects
+load( file = "../Data/lwr.august.2022.Subset.4.ClassifierPaper")
+dim(lwr.august.2022.Subset.4.ClassifierPaper)
+kable(lwr.august.2022.Subset.4.ClassifierPaper[c(1:5),c(1:50)])
+#selcting the related cols===========
+lwr.august.2022.Subset.4.ClassifierPaper.AllTimePoint.FiveClinicalScores<- 
+  lwr.august.2022.Subset.4.ClassifierPaper %>%
+  select(subjectid,
+         mullen_ELC_Std_1,mullen_ELC_Std_2,
+         mullen_ELC_Std_3,mullen_ELC_Std_4,
+         mullen_ELC_Std_5, 
+         vine_AdapBehav_DomStd_1, vine_AdapBehav_DomStd_2, 
+         vine_AdapBehav_DomStd_3, vine_AdapBehav_DomStd_4, 
+         vine_AdapBehav_DomStd_5, 
+         mullen_ELT_1, mullen_ELT_2, 
+         mullen_ELT_3, mullen_ELT_4, 
+         mullen_ELT_5, 
+         mullen_RLT_1, mullen_RLT_2, 
+         mullen_RLT_3, mullen_RLT_4, 
+         mullen_RLT_5, 
+         ados_CoSoTotRRTot_1, ados_CoSoTotRRTot_2, 
+         ados_CoSoTotRRTot_3, ados_CoSoTotRRTot_4, 
+         ados_CoSoTotRRTot_5, 
+         ados_ageMo_1, ados_ageMo_2,
+         ados_ageMo_3, ados_ageMo_4,
+         ados_ageMo_5
+  )
+
+dim(lwr.august.2022.Subset.4.ClassifierPaper.AllTimePoint.FiveClinicalScores)#240  31
+
+
+outcome.score.df <- 
+  extract.the.most.recent.clinical.measures(clinical.score.df = lwr.august.2022.Subset.4.ClassifierPaper.AllTimePoint.FiveClinicalScores, 
+                                            No.of.clinical.measures = 6)
+dim(outcome.score.df)
+
+all.subjects.Train.Test.240.MosteRecent.and.AllTimePoint.FiveClinicalScores <- 
+  merge(x = outcome.score.df, 
+      y = lwr.august.2022.Subset.4.ClassifierPaper.AllTimePoint.FiveClinicalScores, 
+      by.x = "subjectID", by.y = "subjectid")
+dim(all.subjects.Train.Test.240.MosteRecent.and.AllTimePoint.FiveClinicalScores)
+
+#adding ClassifierScore 
+all.subjects.Train.Test.240.MosteRecent.and.AllTimePoint.FiveClinicalScores <- 
+merge(x = all.subjects.Train.Test.240.MosteRecent.and.AllTimePoint.FiveClinicalScores, 
+      y = all.subjects.Train.Test.240.MosteRecent.LWR, by.x = "subjectID", by.y = "subjectId")
+all.subjects.Train.Test.240.OutcomeScoresOnly <- 
+  all.subjects.Train.Test.240.MosteRecent.and.AllTimePoint.FiveClinicalScores%>%
+    select(subjectID,
+      ELT = mullen_ELT_1.Most.Recent, 
+           RLT = mullen_RLT_1.Most.Recent, 
+           ELC = mullen_ELC_Std_1.Most.Recent,
+           ADOS = ados_CoSoTotRRTot_1.Most.Recent, 
+           ABC = vine_AdapBehav_DomStd_1.Most.Recent, 
+           ClassifierScore = ClassifierScore, 
+           Age = ados_ageMo_1.Most.Recent,
+           GeneMutation, 
+           Diagnosis
+           )
+
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot <-
+  convert.df.2.ggplot.friendly(df = all.subjects.Train.Test.240.OutcomeScoresOnly, 
+                              no.of.fixed.characteristics = 3)
+str(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot)
+
+#Renaming Values in Genemutation column according to Karen's email=======
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$GeneMutation[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$GeneMutation != "SFARI.1.or.2"] <-
+  "Without Mutation"
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$GeneMutation[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$GeneMutation == "SFARI.1.or.2"] <-
+  "With Mutation"
+
+all.subjects.Train.Test.240.OutcomeScoresOnly$GeneMutation[
+  all.subjects.Train.Test.240.OutcomeScoresOnly$GeneMutation != "SFARI.1.or.2"] <-
+  "Without Mutation"
+all.subjects.Train.Test.240.OutcomeScoresOnly$GeneMutation[
+  all.subjects.Train.Test.240.OutcomeScoresOnly$GeneMutation == "SFARI.1.or.2"] <-
+  "With Mutation"
+
+
+#Renaming measurement names=============== 
+table(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement)
+#ClassifierScore            ADOS             ABC             ELT             RLT             ELC 
+#240             240             240             240             240             240 
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement == "ClassifierScore"] <-
+  "Classifier Score"
+
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement == "ADOS"] <-
+  "Severity"
+
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement == "ABC"] <-
+  "Adaptive"
+
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement == "ELT"] <-
+  "Expressive"
+
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement == "RLT"] <-
+  "Receptive"
+
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement[
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement == "ELC"] <-
+  "Devel. Quotient"
+
+#Reordering the values of the "Mesearement" according to the Karen's comment:
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement <-
+  factor(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement, 
+         levels =c("Classifier Score", "Severity", "Adaptive", "Expressive", "Receptive", "Devel. Quotient"))
+
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$MesearementValue <-
+  as.numeric(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$MesearementValue)
+
+table(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$GeneMutation)
+table(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot$Mesearement)
+dim(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot)
+
+
+
+#adding a new color column based of Karen's suggestion
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot.haveColorCol <- 
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot %>%
+    mutate(Color =case_when(
+      GeneMutation == "With Mutation" & Diagnosis == "TD" ~ "TD With Mutation",
+      GeneMutation == "Without Mutation" & Diagnosis == "TD" ~ "TD Without Mutation",
+      GeneMutation == "With Mutation" & Diagnosis == "ASD" ~ "ASD With Mutation",
+      GeneMutation == "Without Mutation" & Diagnosis == "ASD" ~ "ASD Without Mutation"
+      ))
+
+#fixing the order of four groups
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot.haveColorCol$Color <- 
+  factor(all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot.haveColorCol$Color,
+         levels = c("ASD With Mutation",
+                    "ASD Without Mutation", 
+                    "TD Without Mutation",
+                    "TD With Mutation"
+                    ),ordered = TRUE)
+
+#changing the colors to be matched with the other figure's color=======
+#"Figure5.New.SixMeasurement.Age.BoxV15.pdf"
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot.haveColorCol %>%
+    ggplot(aes(x = Diagnosis, y = MesearementValue, fill =  factor(Color) )) + 
+    geom_boxplot(outlier.shape = NA)  +
+    
+    stat_summary(fun.y=mean,shape=20, col='red', geom='point', position = position_dodge(width = .75))+
+    
+    scale_fill_manual(values = c("TD With Mutation" = '#F8766D', 
+                                 "TD Without Mutation" = 'pink1', 
+                                 "ASD With Mutation" = '#00BFC4',
+                                 "ASD Without Mutation" = 'slategray1')) + 
+    facet_wrap(.~ Mesearement , scales="free_y")+ 
+    theme_bw() +
+    theme(panel.spacing.x = unit(.75, "cm")) +
+    theme(panel.spacing.y = unit(.25, "cm"))+
+    theme(strip.background = element_rect(fill="dodgerblue", size=1))+ 
+    theme(
+      panel.grid.major.y = element_line(color = "black", size = 0.2)) + 
+    theme(
+      panel.grid.minor.y = element_line(color = "white", size = 0)) + 
+    theme(
+        panel.grid.major.x = element_blank()) + 
+    theme(
+      panel.grid.minor.x  = element_blank())
+  
+  
+```
+
+### Posthoc statitical analysis 
+Some statitical analysis to see if subjects with and without mutations have different clinical characteristics. 
+```{r posthoc atatistical test and summarization}
+
+summarized.table <-  
+  all.subjects.Train.Test.240.OutcomeScoresOnly %>%
+  group_by(GeneMutation, Diagnosis)%>% 
+  summarise(ELC.Mean = mean(na.omit(ELC)), 
+            ELT.Mean = mean(na.omit(ELT)),
+            RLT.Mean = mean(na.omit(RLT)),
+            ABC.Mean = mean(na.omit(ABC)),
+            ADOS.Mean = mean(na.omit(ADOS)),
+            Age.Mean = mean(Age)
+  )
+
+#"summarized.table.all.subjects.Train.Test.240.MosteRecentClinicalScores.csv"
+kable(summarized.table)
+
+# As we can see there is no sig. diff. based on mutations (in both corrected and even uncorrected p-values) and all differences are due to the different dxj.
+
+summarized.clinical.scores <- 
+  all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot.haveColorCol %>%
+   group_by(Diagnosis, Mesearement)%>%
+    summarise(mean = mean(na.omit(MesearementValue)), 
+              sd = sd(na.omit(MesearementValue)) , 
+              median = median(na.omit(MesearementValue))) 
+kable(summarized.clinical.scores)
+```
+
+```{r  fig.height = 15, fig.width = 20}
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot.haveColorCol %>%
+  ggstatsplot::grouped_ggbetweenstats(
+    x = Color, 
+    y = MesearementValue, 
+    fill = Color, p.adjust.method = "none",
+    grouping.var = Mesearement, 
+    type = "np", xlab = "Group")  
+```
+
+```{r fig.height = 15, fig.width = 20}
+#after FDR correction
+all.subjects.Train.Test.240.OutcomeScoresOnly.Ready.4.ggplot.haveColorCol %>%
+  grouped_ggbetweenstats(
+    x = Color, 
+    y = MesearementValue, 
+    fill = Color, p.adjust.method = "BH",
+    grouping.var = Mesearement, 
+    type = "np", xlab = "Group")  
+
+```
+
+

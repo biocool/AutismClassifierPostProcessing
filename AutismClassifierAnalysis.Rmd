@@ -1,0 +1,177 @@
+---
+title: "Assessing Age Effect on the Ensemble Classifier Scores"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+## Loading required libraries
+```{r loading libraries}
+library(ggplot2)
+library(dplyr)
+library(rstatix)
+library(WRS2)
+library(ggpubr)
+library(rockchalk)
+library(optbin)
+library(tidyverse)
+library(hrbrthemes)
+library(viridis)
+library(ggstatsplot)
+library(knitr)
+```
+
+## Preprocessing Reading the data
+### Reading the data
+```{r }
+#classifier's scores for the training data:
+train.scores <- 
+  read.csv("../Data/main_age_scoreV3.csv")
+dim(train.scores)#175   8
+str(train.scores)
+##important features:
+#weightedEstimate: num
+#age_at_blooddraw: int
+#diagnosis_binary: chr
+length(unique(train.scores$subjectID))#175
+#classifier's scores for the test data
+test.scores <- 
+  read.csv("../Data/test_age_scoreV3.csv")
+dim(test.scores)#65  8
+str(test.scores)
+#age_at_blooddraw: int
+#weightedEstimate: num
+#diagnosis_binary: chr
+```
+
+### Merging train and test data to assess the age effect in the whole data 
+```{r}
+#Adding a new col. to discreminate train from test after merging the data
+train.scores$group <-
+  rep("Train", nrow(train.scores))
+test.scores$group <-
+  rep("Test", nrow(test.scores))
+#merging both data
+whole.subject.data <- 
+  rbind(train.scores,
+      test.scores)
+dim(whole.subject.data)#240   9
+str(whole.subject.data)
+whole.subject.data$group <- 
+  as.factor(whole.subject.data$group)
+whole.subject.data$diagnosis_binary <- 
+  as.factor(whole.subject.data$diagnosis_binary)
+str(whole.subject.data)
+
+```
+
+## Assessing the age effect
+```{r}
+#checking the normality
+shapiro.test(whole.subject.data$age_at_blooddraw)
+#fitting linear model
+res.lm.age.effect <-
+  lm(formula = weightedEstimate ~ age_at_blooddraw+diagnosis_binary, 
+     data = whole.subject.data)
+summary(res.lm.age.effect)
+#ANOVA================================================================================
+anova_test(weightedEstimate ~ diagnosis_binary + age_at_blooddraw, 
+             data = whole.subject.data) 
+train.scores$diagnosis_binary <- 
+  as.factor(train.scores$diagnosis_binary)
+anova_test(weightedEstimate ~ diagnosis_binary + age_at_blooddraw, 
+           data = train.scores) 
+test.scores$diagnosis_binary <- 
+  as.factor(test.scores$diagnosis_binary)
+anova_test(weightedEstimate ~ diagnosis_binary + age_at_blooddraw, 
+           data = test.scores) 
+#ANCOVA================================================================================
+#checking the age*diagnosis interaction
+ancova(weightedEstimate ~ diagnosis_binary:age_at_blooddraw , 
+        data= whole.subject.data)
+ancova(weightedEstimate ~ diagnosis_binary:age_at_blooddraw , 
+       data= train.scores)
+whole.subject.data.lm.2 <- 
+  lm(formula =weightedEstimate ~ age_at_blooddraw + diagnosis_binary , 
+     diagnosis_binary:age_at_blooddraw, 
+     data = whole.subject.data)
+dev.new()
+plotSlopes(whole.subject.data.lm.2, plotx ="diagnosis_binary", 
+           modx = "age_at_blooddraw", 
+           modxVals = "std.dev")
+
+#Finding optimal age bins================================================================================
+#Here the age-classifier score relationship was assessed in different age bins
+#https://rdrr.io/cran/optbin/man/optbin.html
+#Determines break points in numeric data that minimize the 
+#difference between each point in a bin and the average over it.
+#Data is converted into a numeric vector and sorted if necessary. Internally bins are determined by positions within the vector, with the breaks inclusive at the upper end. 
+#The bin thresholds are the same, so bin b covers the range thr[b-1] < x <= thr[b], where thr[0] is -Inf. 
+dim(whole.subject.data)#240  12
+#removing incomplete subjects 
+whole.subject.data <- 
+  whole.subject.data[complete.cases(whole.subject.data),]
+dim(whole.subject.data)#238  12
+optbin(x = whole.subject.data$age_at_blooddraw, numbin = 3)
+sd(whole.subject.data$age_at_blooddraw)#9.270961
+mean(whole.subject.data$age_at_blooddraw)#23.79832
+#optbin
+#c(0,31.99973 ,37.979,48)
+#New data 
+# Upper Thresholds (inclusive)
+# bin 1   bin 2   bin 3   
+# 20      31      49   
+# Best SE: 2321.154
+#mean-sd,mesn+sd:
+#c(0,28.6394 ,42.08072,48) 
+#new c(0,14.5,33.1) 
+
+#binning the subjects according to the obtained bins==========
+whole.subject.data <- 
+  whole.subject.data %>%
+    mutate(AgeBins = cut(age_at_blooddraw, 
+                         breaks = c(0,20 ,31,49) ))
+kable(whole.subject.data[c(1:10),])
+```
+
+## Visualiztion 
+```{r visualization age effect,  fig.height = 15, fig.width = 15}
+whole.subject.data %>%
+  ggscatter( x = "age_at_blooddraw", y = "weightedEstimate",  
+               color = "diagnosis_binary", add = "reg.line", conf.int = TRUE, 
+               margin.params = list(fill = "diagnosis_binary", color = "diagnosis_binary", size = 0.2)
+) +
+  facet_wrap(AgeBins ~ ., ncol = 1, scales='free')+ theme_gray()
+
+
+whole.subject.data %>%
+  ggscatter( x = "age_at_blooddraw", y = "weightedEstimate",
+             color = "diagnosis_binary", add = "reg.line", conf.int = TRUE, mean.point = TRUE) + 
+    stat_regline_equation(
+      aes(label =  paste(..eq.label.., ..rr.label.., sep = "~~~~"), 
+          color = diagnosis_binary)  ) + facet_wrap(AgeBins ~ group, ncol = 3, scales='free')+ theme_gray()
+
+whole.subject.data %>%
+  ggscatter( x = "age_at_blooddraw", y = "weightedEstimate",
+             color = "diagnosis_binary", add = "reg.line", conf.int = TRUE, mean.point = TRUE) + 
+  stat_regline_equation(
+    aes(label =  paste(..eq.label.., ..rr.label.., sep = "~~~~"), 
+        color = diagnosis_binary)  ) + facet_wrap(AgeBins ~ ., ncol = 1, scales='free')+ theme_gray()
+
+anova.test.results.in.each.age.bins <-
+  whole.subject.data %>%
+    group_by(AgeBins)%>%
+      anova_test(weightedEstimate ~ diagnosis_binary*age_at_blooddraw,) 
+kable(anova.test.results.in.each.age.bins)
+
+```
+
+
